@@ -66,4 +66,9 @@ private static AKSKOption readFromFile() {
 
 如果是本地开发调试，那么这个问题很好确定，直接在`AKSKManager`的`getCredential`方法里打断点去看一下即可。如果是在线上部署运行的服务，那么只能看日志，凭经验来定位了。与AK/SK认证相关的日志关键词有这些：
 - "read ak/sk from"：显示AK/SK的来源是哪里，"read ak/sk from security storage file."表示服务实例从AK/SK加密存储文件中读取配置项的，"read ak/sk from microservice.yaml."表示服务实例从配置项中读物AK/SK的（注意，这里说的是***配置项，包含了环境变量、系统属性以及配置文件***，不单单是指microservice.yaml文件）。
-- 
+- 加载cipher
+- ""(加密存储文件没有读权限)
+- （microservice.yaml文件里面配置加密的aksk，密钥文件读取不到）
+- Java高强度加密没有开启
+
+***CSEJavaSDK只会去$CIPHER_ROOT配置的目录下去读取解密用的密钥文件***，这一点一定要注意。AK/SK加密存储的说明可以参考[这里](https://support.huaweicloud.com/devg-cse/cse_03_0088.html)。
