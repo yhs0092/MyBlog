@@ -45,7 +45,8 @@ protected Object syncInvoke(Invocation invocation, SwaggerConsumerOperation cons
   throw ExceptionFactory.convertConsumerException(response.getResult());
 }
 ```
-出现了线上日志中的错误说明这个方法没有走到throw语句，而是走return语句那里返回了。<br/>
+出现了线上日志中的错误说明这个方法没有走到throw语句，而是走return语句那里返回了。
+
 `InvokerUtils.innerSyncInvoke()`方法里触发的主要流程是Handler->HttpClientFilter->网络线程，既然在用户自定义的`HTTPClientFilter`实现类的`afterReceiveResponse()`方法中已经打印出了B服务返回的应答消息，那么网络线程部分的嫌疑就可以排除了。问题只可能出在`Invoker`、`Handler`、`HTTPClientFilter`这三块。这个异常需要被catch住并塞到`response`里。同时，为了让异常作为response body返回，而不是被“抛”出去，`response.isSuccessed()`需要返回`true`，这就要求`response`的Http状态码必须是2xx的。通过在demo中加入自定义的`HttpClientFilter`，在`afterReceiveResponse()`方法中抛出一个状态码为200的`InvocationException`，我们复现出了这个问题，其日志特征与A服务的线上日志一致。
 
 ## 根因确定
@@ -71,5 +72,42 @@ try {
 ## 总结
 
 ServiceComb框架在此次定位过程中暴露出来的缺少日志的问题会在后续版本中修复。但是对于开发者而言，更重要的是服务上线部署前需要做好充分验证，临时替换依赖jar包这种简单粗暴的处理方式不可取。
+
+那么本地调试过程中碰到这种问题应该如何定位呢？以本文所描述的场景（RPC调用方式，同步运行模式）来看，当业务代码中触发一次微服务调用，ServiceComb的处理流程大致是：
+> Invoker -> InvokerUtils -> Handler -> HTTPClientFilter -> 网络线程
+
+`Invoker`是RPC调用模式下的动态代理，业务代码通过provider接口做调用时，参数首先被传到`invoke()`方法中。由于consumer工作于同步模式，`Invoker`会通过`syncInvoke()`方法调用`InvokerUtils`的`innerSyncInvoke()`方法。在这里，`Invocation`的`next()`方法被调用，***从而触发Handler链执行***。在Handler链的末尾是`TransportClientHandler`，它会调用对应的transport方式发送请求。在Rest over Vertx传输方式下，我们需要关注的是`RestClientInvocation`的`invoke()`方法，这里会***遍历执行HttpClientFilter的beforeSendRequest()方法***，然后将请求调度到网络线程中发送。业务线程此时处于等待返回的状态（`SyncResponseExecutor.waitResponse()`方法中使用`CountDownLatch`进行等待）。
+
+当请求应答返回后，`RestClientInvocation.processResponseBody()`方法会将Http response body返回给业务线程处理（通过触发`SyncResponseExecutor`的`CountDownLatch`）。应答首先会在`RestClientInvocation`中***遍历HttpClientFilter的afterReceiveResponse()方法***进行处理，然后***经过Handler链***的回调处理，最终返回给`InvokerUtils`的`syncInvoke()`方法。其中，***Http response body是在DefaultHttpClientFilter的extractResult()方法中反序列化为业务接口返回对象的***。这个方法会根据`response`的HTTP状态码判断如何对待结果，如果是2xx的状态码，则`response`中的`result`会作为正常的应答返回给业务逻辑，否则会将`result`包装到`InvocationException`中抛给业务逻辑。
+```java
+  // RestClientInvocation中处理应答的关键方法
+  protected void processResponseBody(Buffer responseBuf) {
+    invocation.getResponseExecutor().execute(() -> {
+      // 同步模式下，应答返回流程从这里开始就是在业务线程里执行的
+      try {
+        HttpServletResponseEx responseEx =
+            new VertxClientResponseToHttpServletResponse(clientResponse, responseBuf);
+        for (HttpClientFilter filter : httpClientFilters) {
+          // HttpClientFilter处理返回消息体，普通的filter会返回null
+          Response response = filter.afterReceiveResponse(invocation, responseEx);
+          if (response != null) { // DefaultHttpClientFilter会把消息体反序列化为应答对象，装入response返回
+            asyncResp.complete(response); // 通过回调触发handler链
+            return;
+          }
+        }
+      } catch (Throwable e) {
+        asyncResp.fail(invocation.getInvocationType(), e); // 包装异常，通过回调触发handler链
+      }
+    });
+  }
+```
+
+本地分析这类问题的时候，首先需要知道请求发送的流程，了解RPC动态代理的入口、`Handler`链的起止点、`HttpClientFilter`的调用点。这些是流程中的关键节点，根据这些信息可以大致确定问题出现的范围。至于更进一步的定位，就需要大家根据具体的问题进行分析了。
+
+> 看不懂上面说的是什么？正常 :P
+>
+> 只看一篇博客是很难弄懂这段流程的。关键的代码节点已经给出来了，自己写个demo调试一下，你的了解会更深刻
+>
+> (￣▽￣)ﾉ
 
 [问题复现demo]: https://github.com/yhs0092/CSEBlogDemo-DecodeResponseError
