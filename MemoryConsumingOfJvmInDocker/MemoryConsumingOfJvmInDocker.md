@@ -18,7 +18,7 @@
 
 1. 创建云上工程
 
-  ![](pic/create_cloud-base_project)
+  ![](pic/create_cloud-base_project.PNG)
 
   首先需要在华为云 ServiceStage 创建一个云上工程。
 
@@ -26,12 +26,12 @@
 
   之后云上工程会根据你的选项自动地生成脚手架代码，上传到你指定的代码仓库中，并且为你创建一条流水线，完成代码编译、构建、打包、归档镜像包的操作，并且使用打好的 docker 镜像包在 CCE 集群中部署一个应用堆栈。
 
-  > 创建云上工程和流水线不是本文的重点，我就不详细讲操作了: )。同一个应用堆栈的实例可以部署多个，在这里为了实验方便就按照默认值1个来部署。
+  > 创建云上工程和流水线不是本文的重点，我就不详细讲操作了 : )。同一个应用堆栈的实例可以部署多个，在这里为了实验方便就按照默认值1个来部署。
 
-  ![](pic/demo_service_instance)
+  ![](pic/demo_service_instance.PNG)
   由于云上工程已经改进了脚手架代码的模板，不会再出现内存超限的问题，所以我们现在能看到 demo 服务已经正常的跑起来，微服务实例已经注册到服务中心了。
 
-  ![](pic/curl_helloworld)
+  ![](pic/curl_helloworld.PNG)
   登录到 demo 服务所部署的容器，使用`curl`命令可以调用 demo 服务的 helloworld 接口，可以看到此时服务已经可以正常工作。
 
 2. 增加实验代码
@@ -59,14 +59,14 @@
 
   执行流水线，应用堆栈部署成功后，调用`/allocateMemory`接口触发微服务实例消耗内存，直到 JVM 抛出 OOM 错误，可以在 ServiceStage -> 应用上线 -> 应用管理中选择相应的应用，点击进入概览页面，查看应用使用内存的情况。
 
-  ![](pic/deploy_normal)
+  ![](pic/deploy_normal.PNG)
   应用使用的内存从 800M+ 陡然下降的时间点就是我重新打包部署的时间，而之后由于调用`/allocateMemory`接口，内存占用量上升到了接近 400M，并且在这个水平稳定了下来，显示`-Xmx256m`参数发挥了预期的作用。
 
 ### 复现问题
 
 现在将 demo 工程中的 Dockerfile 修改一下，将基础镜像改为 `java:8u111-jre-alpine`，并且删除启动命令中的`-Xmx256m`参数，将其提交为`noLimit_oldBase`分支，推送到代码仓库中。然后编辑流水线，将 source 阶段的任务所使用的代码分支改为`noLimit_oldBase`分支，保存并重新运行流水线，将新的代码打包部署到应用堆栈中。
 
-<div align=center><img src="pic/deploy_noLimit_oldBase" width="50%" height="50%"/></div>
+<div align=center><img src="pic/deploy_noLimit_oldBase.PNG" width="50%" height="50%"/></div>
 在微服务实例列表中查询到新的微服务实例的 endpoint IP 后，调用`/allocateMemory`接口，观察内存情况，内存从接近 400M 突然掉下去一下，然后又上升到约 450M 的时间点就是修改代码后的微服务实例部署成功的时间点，之后内存占用量突然下跌就是因为调用`/allocateMemory`接口导致容器内存超限被 kill 掉了。
 
 如果你事先使用`docker logs -f`命令查看容器日志的话，那么日志大概是这个样子的
@@ -95,8 +95,8 @@ Killed
 
 回到demo项目代码的`master`分支，将 Dockerfile 中启动命令参数的`-Xmx256m`替换为`-XX:+UnlockExperimentalVMOptions -XX:+UseCGroupMemoryLimitForHeap`，提交为`useCGroupMemoryLimitForHeap`分支，推送到代码仓库里。再次运行流水线进行构建部署。
 
-<div align=center><img src="pic/deploy_useCGroupMemoryLimitForHeap" width="50%" height="50%"/></div>
-等 demo 服务部署成功后，再次调用`/allocateMemory`接口，容器的内存占用情况如上图所示（最右边的那一部分连续曲线），内存上升到一定程度后，JVM 抛出了 OOM 错误，没有继续申请堆内存。看来这种方式也是有效果的。不过，仔细观察容器的内存占用情况，可以发现容器所使用的内存仅为不到 300M，而我们对于这个容器的内存配额限制为 512M，也就是还有 200M+ 是闲置的，并不会被 JVM 利用。这个利用率，比起上文中直接设置`-Xmx256m`的内存利用率要低: ( 。推测是因为 JVM 并不会感知到自己是部署在一个 docker 容器里的，所以它把当前的环境当成一个物理内存只有 512M 的物理机，按照比例来限制自己的最大堆内存，另一部分就被闲置了。
+<div align=center><img src="pic/deploy_useCGroupMemoryLimitForHeap.PNG" width="50%" height="50%"/></div>
+等 demo 服务部署成功后，再次调用`/allocateMemory`接口，容器的内存占用情况如上图所示（最右边的那一部分连续曲线），内存上升到一定程度后，JVM 抛出了 OOM 错误，没有继续申请堆内存。看来这种方式也是有效果的。不过，仔细观察容器的内存占用情况，可以发现容器所使用的内存仅为不到 300M，而我们对于这个容器的内存配额限制为 512M，也就是还有 200M+ 是闲置的，并不会被 JVM 利用。这个利用率，比起上文中直接设置`-Xmx256m`的内存利用率要低 : ( 。推测是因为 JVM 并不会感知到自己是部署在一个 docker 容器里的，所以它把当前的环境当成一个物理内存只有 512M 的物理机，按照比例来限制自己的最大堆内存，另一部分就被闲置了。
 
 > 如此看来，如果想要充分利用自己的服务器资源，还是得多花一点功夫，手动调整好`-Xmx`参数。
 
