@@ -55,3 +55,5 @@ Caused by: java.lang.IllegalStateException: The schema(id=[hello]) content held 
 2. 如果是测试、生产环境，这个时候服务接口应该稳定下来了，服务契约不同通常意味着这应该是一个新版本。那么你应该给你的服务分配一个更新的版本号了。
 
 顺带一提，开发自测时还有一种问题解决办法，就是直接把服务中心里的旧服务记录删掉，更简单 ; )
+
+> 删完记得把上游调用它的服务重启一下，consumer端只加载一次provider的服务契约，之后不再动态刷新的
